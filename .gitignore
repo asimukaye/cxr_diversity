@@ -1,0 +1,5 @@
+/__pychache__
+/lightning_logs
+*.ipynb
+*.jpg 
+*.pyc

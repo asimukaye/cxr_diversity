@@ -1,0 +1,21 @@
+version 23 - barlow 300
+
+version 24 simclr 
+
+version 32 simsiam
+
+version 33 byol
+
+
+version 34 - simclr continued
+
+version 35 - byol continued
+
+
+version 36 - barlow continued
+
+version 37 - simsiam continued
+
+
+
+version 38 - simclr continued
