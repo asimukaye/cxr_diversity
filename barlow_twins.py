@@ -7,7 +7,7 @@ import torch.nn as nn
 import torchvision.transforms as transforms
 from torchvision.models.resnet import resnet18, ResNet18_Weights
 
-
+import numpy as np
 
 class BarlowTwinsTransform:
     def __init__(self, train=True, input_height=224, gaussian_blur=True, jitter_strength=1.0, normalize=None):
@@ -56,12 +56,20 @@ class BarlowTwinsTransform:
 
 
 class BarlowTwinsLoss(nn.Module):
-    def __init__(self, batch_size, lambda_coeff=5e-3, z_dim=128):
+    def __init__(self, batch_size, lambda_coeff=5e-3, z_dim=128, mode='train'):
         super().__init__()
 
         self.z_dim = z_dim
         self.batch_size = batch_size
         self.lambda_coeff = lambda_coeff
+
+    def off_diagonal_ele_batch(self, x):
+        # taken from: https://github.com/facebookresearch/barlowtwins/blob/main/main.py
+        # return a flattened view of the off-diagonal elements of a square matrix
+        res = x.clone()
+        res.diagonal(dim1=-1, dim2=-2).zero_()
+        return res
+    
 
     def off_diagonal_ele(self, x):
         # taken from: https://github.com/facebookresearch/barlowtwins/blob/main/main.py
@@ -75,10 +83,23 @@ class BarlowTwinsLoss(nn.Module):
         z1_norm = (z1 - torch.mean(z1, dim=0)) / torch.std(z1, dim=0)
         z2_norm = (z2 - torch.mean(z2, dim=0)) / torch.std(z2, dim=0)
 
-        cross_corr = torch.matmul(z1_norm.T, z2_norm) / self.batch_size
+
+        z1_norm = z1_norm[:, :, None]
+        z2_norm = z2_norm[:, None, :]
+
+        cross_corr = torch.matmul(z1_norm, z2_norm) 
+        # cross_corr = torch.matmul(z1.T, z2) / self.batch_size
+        # print(cross_corr.shape)
 
         on_diag = torch.diagonal(cross_corr).add_(-1).pow_(2).sum()
-        off_diag = self.off_diagonal_ele(cross_corr).pow_(2).sum()
+        # off_diag = self.off_diagonal_ele(cross_corr).pow_(2).sum()
+        on_diag = torch.diagonal(cross_corr, dim1=-2, dim2=-1).add_(-1).pow_(2).sum(dim=1)
+        # print(on_diag.shape)
+        off_diag = self.off_diagonal_ele_batch(cross_corr).pow_(2).sum(dim=(1,2))
+
+        # print(off_diag.shape)
+        # print(on_diag)
+
 
         return on_diag + self.lambda_coeff * off_diag
     
@@ -130,6 +151,7 @@ class BarlowTwins(L.LightningModule):
         learning_rate=1e-4,
         warmup_epochs=10,
         max_epochs=200,
+        out_dir = 'barlow'
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -142,9 +164,13 @@ class BarlowTwins(L.LightningModule):
         self.max_epochs = max_epochs
 
         self.train_iters_per_epoch = num_training_samples // batch_size
+        self.batch_size = batch_size
+        self.out_dir = out_dir
 
     def forward(self, x):
-        return self.encoder(x)
+        # return self.encoder(x)
+        return self.shared_step(x)
+    
 
     def shared_step(self, batch):
         x1, x2 = batch
@@ -162,6 +188,19 @@ class BarlowTwins(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         loss = self.shared_step(batch)
         self.log("val_loss", loss, on_step=False, on_epoch=True)
+
+    
+    def test_step(self, batch, batch_idx):
+        loss = self.shared_step(batch)
+        agg_loss = loss.sum()/self.batch_size
+        self.log("test_loss", agg_loss, on_step=False, on_epoch=True)
+        return loss
+
+    def test_epoch_end(self, outputs) -> None:
+
+        out_barlow =  torch.cat(outputs).cpu().numpy()
+        np.savetxt(self.out_dir +'_barlow_out.csv', out_barlow)
+
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)

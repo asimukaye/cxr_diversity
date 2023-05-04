@@ -11,7 +11,7 @@ from torchvision.models import resnet18, ResNet18_Weights
 
 from utils import MLP, SiameseArm
 from optimizer_utils import LinearWarmupCosineAnnealingLR
-
+import numpy as np
 
 class SimSiam(LightningModule):
     """PyTorch Lightning implementation of Exploring Simple Siamese Representation Learning (SimSiam_)_
@@ -74,6 +74,7 @@ class SimSiam(LightningModule):
         projector_out_dim: int = 2048,
         predictor_hidden_dim: int = 512,
         exclude_bn_bias: bool = False,
+        out_dir = 'simsiam_',
         **kwargs,
     ) -> None:
         super().__init__()
@@ -82,6 +83,7 @@ class SimSiam(LightningModule):
         self.online_network = SiameseArm(base_encoder, encoder_out_dim, projector_hidden_dim, projector_out_dim)
         self.target_network = deepcopy(self.online_network)
         self.predictor = MLP(projector_out_dim, predictor_hidden_dim, projector_out_dim)
+        self.out_dir = out_dir
 
     def forward(self, x: Tensor) -> Tensor:
         """Returns encoded representation of a view."""
@@ -117,6 +119,20 @@ class SimSiam(LightningModule):
 
         return total_loss
 
+    def calculate_loss_vector(self, v_online: Tensor, v_target: Tensor) -> Tensor:
+        """Calculates similarity loss between the online network prediction of target network projection.
+
+        Args:
+            v_online (Tensor): Online network view
+            v_target (Tensor): Target network view
+        """
+        _, z1 = self.online_network(v_online)
+        h1 = self.predictor(z1)
+        with torch.no_grad():
+            _, z2 = self.target_network(v_target)
+        loss_vector = -0.5 * F.cosine_similarity(h1, z2)
+        return loss_vector
+    
     def calculate_loss(self, v_online: Tensor, v_target: Tensor) -> Tensor:
         """Calculates similarity loss between the online network prediction of target network projection.
 
@@ -130,6 +146,24 @@ class SimSiam(LightningModule):
             _, z2 = self.target_network(v_target)
         loss = -0.5 * F.cosine_similarity(h1, z2).mean()
         return loss
+    
+    def test_step(self, batch, batch_idx):
+        img1, img2 = batch
+
+        # Calculate similarity loss in each direction
+        loss_12 = self.calculate_loss_vector(img1, img2)
+        loss_21 = self.calculate_loss_vector(img2, img1)
+
+        # Calculate total loss
+        total_loss = loss_12 + loss_21
+
+        return total_loss
+
+    def test_epoch_end(self, outputs) -> None:
+
+        out_barlow =  torch.cat(outputs).cpu().numpy()
+        np.savetxt(self.out_dir+'_simsiam_out.csv', out_barlow)
+
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler."""

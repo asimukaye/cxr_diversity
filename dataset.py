@@ -40,8 +40,9 @@ class MIMIC_CXR_Dataset(Dataset):
         elif split == 'unlabeled':
             df_final = df_data.loc[df_data['split'] != 'test']
         else:
-            raise KeyError
+            raise NotImplementedError
 
+        self.df_final = df_final
         df_path = root+'files/p' \
                 + df_final['subject_id'].floordiv(1000000).astype(str)\
                 + '/p' + df_final['subject_id'].astype(str)\
@@ -58,10 +59,16 @@ class MIMIC_CXR_Dataset(Dataset):
         #     # A.Normalize(mean, std, max_pixel_value=255.0, always_apply=True),
         #     A.Lambda(image=ToTensor(), always_apply=True)
         # ])
-    
 
+        print("Mode: ", split)
+        print("Size: ", len(self.image_files))
+        
+    
     def __len__(self):
         return len(self.image_files)
+
+    def get_header_df(self):
+        return self.df_final[['subject_id', 'study_id', 'dicom_id', 'split']]
 
     def __getitem__(self, idx):
         # Get fname index and trace name

@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 from copy import deepcopy
-from typing import Any, Union, Sequence
+from typing import Any, List, Optional, Union, Sequence
+from pytorch_lightning.utilities.types import EPOCH_OUTPUT, STEP_OUTPUT
 import torch
 from pytorch_lightning import LightningModule, Trainer, Callback
 from torch.nn import functional as F
@@ -11,6 +12,8 @@ from utils import MLP, SiameseArm
 from optimizer_utils import LinearWarmupCosineAnnealingLR
 
 import math
+import numpy as np
+
 
 import torch.nn as nn
 from torch import Tensor
@@ -138,6 +141,7 @@ class BYOL(LightningModule):
         projector_hidden_dim: int = 4096,
         projector_out_dim: int = 256,
         initial_tau: float = 0.996,
+        out_dir = 'byol',
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -148,6 +152,7 @@ class BYOL(LightningModule):
         self.predictor = MLP(projector_out_dim, projector_hidden_dim, projector_out_dim)
 
         self.weight_callback = BYOLMAWeightUpdate(initial_tau=initial_tau)
+        self.out_dir = out_dir
 
     def on_train_batch_end(self, outputs: Any, batch: Any, batch_idx: int) -> None:
         """Add callback to perform exponential moving average weight update on target network."""
@@ -169,6 +174,23 @@ class BYOL(LightningModule):
         """Complete validation loop."""
         return self._shared_step(batch, batch_idx, "val")
 
+
+    def test_step(self, batch: Any, batch_idx: int) -> Tensor:
+        img1, img2 = batch
+
+        # Calculate similarity loss in each direction
+        loss_12 = self.calculate_loss_vector(img1, img2)
+        loss_21 = self.calculate_loss_vector(img2, img1)
+
+        # Calculate total loss
+        total_loss = loss_12 + loss_21
+        return total_loss
+    
+    def test_epoch_end(self, outputs: EPOCH_OUTPUT | List[EPOCH_OUTPUT]) -> None:
+        out_cossim =  torch.cat(outputs).cpu().numpy()
+        np.savetxt(self.out_dir +'_byol_out.csv', out_cossim)
+
+    
     def _shared_step(self, batch: Any, batch_idx: int, step: str) -> Tensor:
         """Shared evaluation step for training and validation loop."""
         img1, img2 = batch
@@ -203,6 +225,20 @@ class BYOL(LightningModule):
             _, z2 = self.target_network(v_target)
         loss = -2 * F.cosine_similarity(h1, z2).mean()
         return loss
+
+    def calculate_loss_vector(self, v_online: Tensor, v_target: Tensor) -> Tensor:
+        """Calculates similarity loss between the online network prediction of target network projection.
+
+        Args:
+            v_online (Tensor): Online network view
+            v_target (Tensor): Target network view
+        """
+        _, z1 = self.online_network(v_online)
+        h1 = self.predictor(z1)
+        with torch.no_grad():
+            _, z2 = self.target_network(v_target)
+        loss_vector = -2 * F.cosine_similarity(h1, z2)
+        return loss_vector
 
     def configure_optimizers(self):
         optimizer = Adam(self.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)

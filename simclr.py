@@ -11,6 +11,8 @@ Original file is located at
 ## Imports, basic utils, augmentations and Contrastive loss
 """
 
+from typing import Any, List, Optional, Union
+from pytorch_lightning.utilities.types import EPOCH_OUTPUT, STEP_OUTPUT
 import torch
 import numpy as np
 
@@ -178,7 +180,7 @@ class AddProjection(nn.Module):
 
 
 class SimCLR_pl(pl.LightningModule):
-    def __init__(self, batch_size, embed_dim = 128, hidden_dim=512, lr=3e-4, temperature=0.5, weight_decay=1e-6, max_epochs=300):
+    def __init__(self, batch_size, embed_dim = 128, hidden_dim=512, lr=3e-4, temperature=0.5, weight_decay=1e-6, max_epochs=300, out_dir='simclr/'):
         super().__init__()
         self.save_hyperparameters()
         
@@ -191,10 +193,11 @@ class SimCLR_pl(pl.LightningModule):
         #     nn.Linear(4 * hidden_dim, hidden_dim),
         # )
 
-        # self.loss = ContrastiveLoss(batch_size, temperature=temperature)
+        self.loss = ContrastiveLoss(batch_size, temperature=temperature)
+        self.out_dir = out_dir
 
-    # def forward(self, X):
-    #     return self.model(X)
+    def forward(self, X):
+        return self.info_nce_loss(X, mode='test')
 
     def info_nce_loss(self, batch, mode="train"):
         imgs = batch
@@ -203,15 +206,21 @@ class SimCLR_pl(pl.LightningModule):
         # Encode all images
         feats = self.model(imgs)
         # Calculate cosine similarity
+        # print(feats[:, None, :].shape)
         cos_sim = F.cosine_similarity(feats[:, None, :], feats[None, :, :], dim=-1)
+
+        # print(cos_sim)
         # Mask out cosine similarity to itself
         self_mask = torch.eye(cos_sim.shape[0], dtype=torch.bool, device=cos_sim.device)
         cos_sim.masked_fill_(self_mask, -9e15)
         # Find positive example -> batch_size//2 away from the original example
         pos_mask = self_mask.roll(shifts=cos_sim.shape[0] // 2, dims=0)
+        # print(pos_mask)
         # InfoNCE loss
         cos_sim = cos_sim / self.hparams.temperature
         nll = -cos_sim[pos_mask] + torch.logsumexp(cos_sim, dim=-1)
+
+        # print(nll)
         nll = nll.mean()
 
         # Logging loss
@@ -221,13 +230,27 @@ class SimCLR_pl(pl.LightningModule):
             [cos_sim[pos_mask][:, None], cos_sim.masked_fill(pos_mask, -9e15)],  # First position positive example
             dim=-1,
         )
+        batch_size = cos_sim.shape[0] // 2
+        # print(batch_size)
+        # print(cos_sim[pos_mask].shape)
+
+        cos_sim_out =cos_sim[pos_mask][:batch_size]
+
+        # print(cos_sim.masked_fill(pos_mask, -9e15))
+
+        # print(comb_sim.shape)
         sim_argsort = comb_sim.argsort(dim=-1, descending=True).argmin(dim=-1)
+        # print(sim_argsort)
+        # print(sim_argsort.shape)
         # Logging ranking metrics
         self.log(mode + "_acc_top1", (sim_argsort == 0).float().mean())
         self.log(mode + "_acc_top5", (sim_argsort < 5).float().mean())
         self.log(mode + "_acc_mean_pos", 1 + sim_argsort.float().mean())
-
-        return nll
+        
+        if mode =='train':
+            return nll
+        else:
+            return {'loss': nll, 'cos_sim': cos_sim_out}
     
 
     def training_step(self, batch, batch_idx):
@@ -242,7 +265,34 @@ class SimCLR_pl(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         loss = self.info_nce_loss(batch, mode="val")
+        # x1, x2 = batch
+        # z1 = self.model(x1)
+        # z2 = self.model(x2)
+        # loss = self.loss(z1, z2)
+
+        # self.log("val_loss", loss)
+
+        # loss = self.barlow_loss() 
         return loss
+    
+    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
+        
+        out = self.info_nce_loss(batch, mode='predict')
+        return 
+    
+
+    def test_epoch_end(self, outputs: EPOCH_OUTPUT | List[EPOCH_OUTPUT]) -> None:
+
+        out_cos_sim =  torch.cat([x['cos_sim'] for x in outputs]).cpu().numpy()
+        np.savetxt(self.out_dir +'_simclr_out.csv', out_cos_sim)
+
+        # self.log('test_cos_sim', out_cos_sim)
+        # import pandas as pd
+        # pd.DataFrame(out_cos_sim)
+
+    def test_step(self, batch, batch_idx):
+        
+        return self.info_nce_loss(batch, mode='test')
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)

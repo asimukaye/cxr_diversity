@@ -8,7 +8,7 @@ import os
 
 root = '/home/asim.ukaye/physionet.org/files/mimic-cxr-jpg/2.0.0/'
 
-df_data = pd.read_csv(os.path.join(root, 'mimic-cxr-2.0.0-dataloader.csv'), header=0, sep=',')
+df_data = pd.read_csv(os.path.join(root, 'mimic-cxr-2.0.0-dataloader_2.csv'), header=0, sep=',')
 
 df_path = 'files/p' \
         + df_data['subject_id'].floordiv(1000000).astype(str)\
